@@ -1,0 +1,187 @@
+FROM nginx:1.23.3-alpine
+
+RUN rm /etc/nginx/conf.d/default.conf
+
+COPY ./default.conf /etc/nginx/conf.d/default.conf
+
+FROM nginx:1.23.3-alpine
+
+RUN rm /etc/nginx/conf.d/default.conf
+
+COPY ./default.conf /etc/nginx/conf.d/default.conf
+
+
+FROM nginx:1.23.3-alpine
+
+RUN rm /etc/nginx/conf.d/default.conf
+
+COPY ./default.conf /etc/nginx/conf.d/default.conf
+
+
+
+FROM postgres:15-bullseye
+
+
+COPY ./docker/local/postgres/maintenance /usr/local/bin/maintenance
+
+RUN chmod +x /usr/local/bin/maintenance/*
+
+RUN mv /usr/local/bin/maintenance/* /usr/local/bin \
+  && rmdir /usr/local/bin/maintenance
+
+  build:
+	docker compose -f local.yml up --build -d --remove-orphans
+
+up:
+	docker compose -f local.yml up -d
+
+down:
+	docker compose -f local.yml down
+
+show-logs:
+	docker compose -f local.yml logs
+
+show-logs-api:
+	docker compose -f local.yml logs api
+
+makemigrations:
+	docker compose -f local.yml run --rm api python manage.py makemigrations
+
+migrate:
+	docker compose -f local.yml run --rm api python manage.py migrate
+
+collectstatic:
+	docker compose -f local.yml run --rm api python manage.py collectstatic --no-input --clear
+
+superuser:
+	docker compose -f local.yml run --rm api python manage.py createsuperuser
+
+down-v:
+	docker compose -f local.yml down -v
+
+volume:
+	docker volume inspect src_local_postgres_data
+
+authors-db:
+	docker compose -f local.yml exec postgres psql --username=alphaogilo --dbname=authors-live
+
+flake8:
+	docker compose -f local.yml exec api flake8 .
+
+black-check:
+	docker compose -f local.yml exec api black --check --exclude=migrations .
+
+black-diff:
+	docker compose -f local.yml exec api black --diff --exclude=migrations .
+
+black:
+	docker compose -f local.yml exec api black --exclude=migrations .
+
+isort-check:
+	docker compose -f local.yml exec api isort . --check-only --skip venv --skip migrations
+
+isort-diff:
+	docker compose -f local.yml exec api isort . --diff --skip venv --skip migrations
+
+isort:
+	docker compose -f local.yml exec api isort . --skip venv --skip migrations
+
+#!/usr/bin/env python
+"""Django's command-line utility for administrative tasks."""
+import os
+import sys
+
+
+def main():
+    """Run administrative tasks."""
+    # TODO: change this in production
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authors_api.settings.local")
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
+
+
+if __name__ == "__main__":
+    main()
+
+
+version: "3.9"
+
+services:
+    es:
+        image: elasticsearch:7.17.9
+        environment:
+            - discovery.type=single-node
+        ports:
+            - "9200:9200"
+        networks:
+            - reverseproxy_nw
+    api: &api
+        build:
+            context: .
+            dockerfile: ./docker/production/django/Dockerfile
+        command: /start
+        image: authors_api
+        volumes:
+            - static_volume:/app/staticfiles
+            - media_volume:/app/mediafiles
+        env_file:
+            - ./.envs/.production/.django
+            - ./.envs/.production/.postgres
+        depends_on:
+            - postgres
+            - redis
+            - es
+        networks:
+            - reverseproxy_nw
+
+    postgres:
+        build:
+            context: .
+            dockerfile: ./docker/production/postgres/Dockerfile
+        image: authors_api_database
+        volumes:
+            - production_postgres_data:/var/lib/postgresql/data
+            - production_postgres_data_backups:/backups
+        env_file:
+            - ./.envs/.production/.postgres
+        networks:
+            - reverseproxy_nw
+
+    redis:
+        image: redis:7-alpine
+        networks:
+            - reverseproxy_nw
+
+    celery_worker:
+        <<: *api
+        image: authors_api_celery_worker
+        command: /start-celeryworker
+        networks:
+            - reverseproxy_nw
+
+    flower:
+        <<: *api
+        image: authors_api_flower
+        command: /start-flower
+        volumes:
+            - flower_data:/data
+        networks:
+            - reverseproxy_nw
+
+networks:
+    reverseproxy_nw:
+        external: true
+
+volumes:
+    static_volume: {}
+    media_volume: {}
+    production_postgres_data: {}
+    production_postgres_data_backups: {}
+    flower_data: {}
